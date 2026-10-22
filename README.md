@@ -612,16 +612,8 @@ The desktop smoke test passed with Python 3.12 and Tk 9.0. It checks fullscreen 
 
 The all-zero receiver MAC is an intentional placeholder: set the actual MAC to enable transmission. Local sampling and SD recording can operate without radio. Package-manager dependencies may include additional transitive versions; the verified firmware build selected the explicitly pinned BusIO 1.17.2. Generated build outputs, downloaded project libraries and Python caches remain ignored by Git.
 
-## Project background and references
+## References
 
-The package provides live sensor telemetry, onboard and desktop CSV logging, and a separate ESP32-CAM payload with timed onboard photos. Board identity, sensor alignment and actual wiring must be confirmed against the physical kit.
-
-### CanSat, RESOLVE and SRC-UCP links
-
-| Resource                                            | Link                                                                                                                                |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| CanSat Explorer Kit (CK-2508)                       | [Space4ALL CanSat page](https://sites.google.com/view/space4all/cansat/) — kit overview, sensors, ground station and camera payload |
-| RESOLVE                                             | [RESOLVE Space Camp](https://resolve.uet.edu.pk/space-camp-2025/) — CanSat activities and participating institutions                |
-| Space Research Center, University of Central Punjab | [SRC-UCP](https://src.ucp.edu.pk/) — research center and CanSat projects                                                            |
+The package provides live sensor telemetry, onboard and desktop CSV logging, and a separate ESP32-CAM payload with timed onboard photos. Board identity, sensor alignment and actual wiring must be confirmed against the physical kit.                                                    |
 
 Technical references include [Arduino's build process](https://docs.arduino.cc/arduino-cli/sketch-build-process), the [Espressif32 6.12.0 package manifest](https://github.com/platformio/platform-espressif32/blob/v6.12.0/platform.json), [Espressif ESP-NOW documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/network/esp_now.html), and [QST's QMC5883L datasheet, Table 2](https://www.qstcorp.com/upload/pdf/202512/13-52-04%20QMC5883L%20Datasheet%20Rev.%20B.pdf). Sensor identity, alignment and the actual board/pinout still require physical confirmation.
