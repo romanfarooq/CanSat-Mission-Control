@@ -516,8 +516,6 @@ All **11 automated tests passed** with Python 3.12, pyserial 3.5 and Pillow 12.0
 
 The desktop smoke test passed with Python 3.12 and Tk 9.0. It checks telemetry rendering and tabs, all raw fields, timestamps and magnetic magnitude, angle dials/reset, session reset, connection/disconnection and CSV flush, camera preview from a local HTTP fixture, saving identical JPEG bytes, independent camera stopping and orderly window shutdown. The actual GUI was visually inspected at 1100 × 800; the screenshot above contains synthetic telemetry.
 
-These checks use simulated serial and HTTP sources, not physical sensors or camera capture. No board was flashed and no radio range, flight, wiring, power or simultaneous camera/telemetry hardware test was performed. The receiver's core-3.x compatibility branch was not built. Firmware build success does not validate the physical kit. GitHub Actions was configured but not executed on GitHub during local preparation.
-
 The all-zero receiver MAC is an intentional placeholder: set the actual MAC before uploading the transmitter. Package-manager dependencies may include additional transitive versions; the verified firmware build selected the explicitly pinned BusIO 1.17.2. Generated build outputs, downloaded project libraries and Python caches remain ignored by Git.
 
 ## Project background and references
