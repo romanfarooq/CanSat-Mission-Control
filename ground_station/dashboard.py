@@ -12,9 +12,16 @@ BG = "#080e1d"
 PANEL = "#111d32"
 LINE = "#253650"
 TEXT = "#e4edf9"
-MUTED = "#8a9dbb"
+MUTED = "#a7b8ce"
 CYAN = "#55e2dc"
 AMBER = "#ffc879"
+TEXT_SCALES = {
+    "Small": 0.8,
+    "Medium": 0.9,
+    "Auto": 1.0,
+    "Large": 1.1,
+    "Extra large": 1.2,
+}
 
 
 class Dashboard:
@@ -24,8 +31,12 @@ class Dashboard:
         self.root = root
         self.actions = actions
         self.log_dir = log_dir
+        self.fullscreen = False
+        self.ui_scale = 1.0
+        self.fonts = {}
+        self.resize_job = None
 
-        # Use a font available on this machine; pixel sizes keep layout predictable.
+        # Named fonts let existing widgets grow when the window gets larger.
         families = {name.lower(): name for name in font.families(root)}
         self.font_family = next(
             (
@@ -40,8 +51,10 @@ class Dashboard:
         root.geometry("1220x860")
         root.minsize(1080, 800)
         root.configure(bg=BG)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(3, weight=1)
 
-        style = ttk.Style(root)
+        style = self.style = ttk.Style(root)
         style.theme_use("clam")
         style.configure(
             "TCombobox",
@@ -50,8 +63,11 @@ class Dashboard:
             foreground=TEXT,
             arrowcolor=CYAN,
             bordercolor=LINE,
-            font=(self.font_family, -13),
+            padding=(8, 8),
+            arrowsize=18,
+            font=self.ui_font(13),
         )
+        root.option_add("*TCombobox*Listbox.font", self.ui_font(13))
         style.map(
             "TCombobox",
             fieldbackground=[("readonly", PANEL)],
@@ -70,12 +86,13 @@ class Dashboard:
             background=LINE,
             foreground=TEXT,
             padding=(14, 7),
-            font=(self.font_family, -13),
+            font=self.ui_font(13),
         )
         style.map(
             "TNotebook.Tab",
             background=[("selected", PANEL)],
             foreground=[("selected", CYAN)],
+            padding=[("selected", (14, 7)), ("!selected", (14, 7))],
         )
         style.configure(
             "Telemetry.Treeview",
@@ -83,22 +100,99 @@ class Dashboard:
             fieldbackground=PANEL,
             foreground=TEXT,
             rowheight=25,
-            font=(self.font_family, -13),
+            font=self.ui_font(13),
         )
         style.configure(
             "Telemetry.Treeview.Heading",
             background=LINE,
             foreground=TEXT,
-            font=(self.font_family, -13),
+            font=self.ui_font(13),
         )
         self.values = {}
         self.build()
+        root.bind("<F11>", self.toggle_fullscreen)
+        root.bind("<Escape>", self.exit_fullscreen)
+        root.bind("<Configure>", self.schedule_scale, add="+")
+        root.after_idle(self.update_scale)
+
+    def ui_font(self, pixels):
+        if pixels not in self.fonts:
+            self.fonts[pixels] = font.Font(
+                root=self.root,
+                family=self.font_family,
+                size=-round(pixels * self.ui_scale),
+            )
+        return self.fonts[pixels]
+
+    def schedule_scale(self, event):
+        if event.widget is self.root:
+            if self.resize_job is not None:
+                self.root.after_cancel(self.resize_job)
+            self.resize_job = self.root.after(100, self.update_scale)
+
+    def update_scale(self, event=None):
+        self.resize_job = None
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        # Fit the whole dashboard, including the footer, rather than scaling by width alone.
+        automatic = max(1.0, min(width / 1220, height / 860, 2.5))
+        preference = TEXT_SCALES[self.text_size.get()]
+        scale = round(automatic * preference, 2)
+        if scale != self.ui_scale:
+            self.ui_scale = scale
+            for pixels, named_font in self.fonts.items():
+                named_font.configure(size=-max(1, round(pixels * scale)))
+            self.style.configure("Telemetry.Treeview", rowheight=round(25 * scale))
+            self.style.configure(
+                "TNotebook.Tab", padding=(round(14 * scale), round(7 * scale))
+            )
+            tab_padding = (round(14 * scale), round(7 * scale))
+            self.style.map(
+                "TNotebook.Tab",
+                padding=[("selected", tab_padding), ("!selected", tab_padding)],
+            )
+            self.style.configure("TCombobox", arrowsize=round(18 * scale))
+            self.style.configure("TScrollbar", arrowsize=round(16 * scale))
+            self.draw_dials(self.actions.model)
+            self.draw_plot(self.actions.history)
+            if self.actions.latest:
+                self.render(self.actions.latest, self.actions.model)
+            self.camera.draw()
+        self.gps.configure(wraplength=max(200, width - 100))
+        self.status.configure(wraplength=max(200, width - 56))
+        # Keep the connection state and fullscreen control visible on narrow windows.
+        header_width = (
+            self.brand.winfo_reqwidth()
+            + self.subtitle.winfo_reqwidth()
+            + self.link.winfo_reqwidth()
+            + self.fullscreen_button.winfo_reqwidth()
+            + 70
+        )
+        if header_width > width - 56:
+            self.subtitle.pack_forget()
+        elif not self.subtitle.winfo_manager():
+            self.subtitle.pack(side="left", padx=22)
+
+    def toggle_fullscreen(self, event=None):
+        self.set_fullscreen(not self.fullscreen)
+        return "break"
+
+    def exit_fullscreen(self, event=None):
+        if self.fullscreen:
+            self.set_fullscreen(False)
+            return "break"
+
+    def set_fullscreen(self, enabled):
+        self.root.attributes("-fullscreen", enabled)
+        self.fullscreen = enabled
+        self.fullscreen_button.config(
+            text="Exit fullscreen (Esc)" if enabled else "Fullscreen (F11)"
+        )
 
     def label(self, parent, text="", size=10, color=TEXT, **kwargs):
         return tk.Label(
             parent,
             text=text,
-            font=(self.font_family, -round(size * 1.3)),
+            font=self.ui_font(round(size * 1.3)),
             fg=color,
             bg=parent.cget("bg"),
             **kwargs,
@@ -117,26 +211,32 @@ class Dashboard:
             padx=14,
             pady=8,
             cursor="hand2",
-            font=(self.font_family, -13),
+            font=self.ui_font(13),
         )
 
     def build(self):
         """Lay out the overview, tabs and connection controls."""
         header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=28, pady=(22, 12))
-        self.label(header, "◉  C A N S A T", 23, CYAN).pack(side="left")
-        self.label(header, "MISSION CONTROL  /  TELEMETRY CONSOLE", 10, MUTED).pack(
-            side="left", padx=22
+        header.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 12))
+        self.brand = self.label(header, "◉  C A N S A T", 23, CYAN)
+        self.brand.pack(side="left")
+        self.subtitle = self.label(
+            header, "MISSION CONTROL  /  TELEMETRY CONSOLE", 10, MUTED
         )
+        self.subtitle.pack(side="left", padx=22)
+        self.fullscreen_button = self.button(
+            header, "Fullscreen (F11)", self.toggle_fullscreen
+        )
+        self.fullscreen_button.pack(side="right")
         self.link = self.label(header, "● STANDBY", 11, AMBER)
-        self.link.pack(side="right")
+        self.link.pack(side="right", padx=(0, 14))
 
         # Serial controls act on the session controller, not on the widgets.
         controls = tk.Frame(self.root, bg=PANEL, padx=14, pady=10)
-        controls.pack(fill="x", padx=28)
+        controls.grid(row=1, column=0, sticky="ew", padx=28)
         self.label(controls, "GROUND LINK", 9, MUTED).pack(side="left", padx=(0, 12))
         self.port = ttk.Combobox(
-            controls, width=20, state="readonly", font=(self.font_family, -13)
+            controls, width=20, state="readonly", font=self.ui_font(13)
         )
         self.port.pack(side="left")
         self.button(controls, "Refresh", self.actions.refresh_ports).pack(
@@ -151,10 +251,21 @@ class Dashboard:
         )
         self.demo_button.pack(side="left", padx=8)
         self.clock = self.label(controls, "T+ 00:00", 12, CYAN)
-        self.clock.pack(side="right")
+        self.clock.pack(side="right", padx=(14, 0))
+        self.text_size = ttk.Combobox(
+            controls,
+            values=tuple(TEXT_SCALES),
+            width=10,
+            state="readonly",
+            font=self.ui_font(13),
+        )
+        self.text_size.set("Auto")
+        self.text_size.pack(side="right")
+        self.text_size.bind("<<ComboboxSelected>>", self.update_scale)
+        self.label(controls, "TEXT SIZE", 9, MUTED).pack(side="right", padx=(12, 8))
 
         stats = tk.Frame(self.root, bg=BG)
-        stats.pack(fill="x", padx=28, pady=14)
+        stats.grid(row=2, column=0, sticky="ew", padx=28, pady=14)
         for i, (key, title, unit) in enumerate(
             [
                 ("alt", "BAROMETRIC ALTITUDE", "m"),
@@ -174,23 +285,26 @@ class Dashboard:
 
         # Tabs share the same incoming data and calibration state.
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=28)
+        self.notebook.grid(row=3, column=0, sticky="nsew", padx=28)
         center = tk.Frame(self.notebook, bg=BG)
         self.notebook.add(center, text="Flight overview")
+        center.rowconfigure(0, weight=1)
+        center.columnconfigure(0, weight=3, uniform="overview")
+        center.columnconfigure(1, weight=1, uniform="overview")
         plot_box = tk.Frame(center, bg=PANEL, padx=16, pady=12)
-        plot_box.pack(side="left", fill="both", expand=True)
+        plot_box.grid(row=0, column=0, sticky="nsew")
         self.label(plot_box, "01  /  ALTITUDE TRACE", 10, MUTED).pack(anchor="w")
         self.plot = tk.Canvas(
             plot_box, bg=PANEL, width=500, height=140, highlightthickness=0
         )
         self.plot.pack(fill="both", expand=True, pady=(12, 0))
         compass_box = tk.Frame(center, bg=PANEL, padx=16, pady=12)
-        compass_box.pack(side="right", fill="both", padx=(14, 0))
+        compass_box.grid(row=0, column=1, sticky="nsew", padx=(14, 0))
         self.label(compass_box, "02  /  MAGNETIC BEARING", 10, MUTED).pack(anchor="w")
         self.compass = tk.Canvas(
             compass_box, bg=PANEL, width=260, height=140, highlightthickness=0
         )
-        self.compass.pack(expand=True)
+        self.compass.pack(fill="both", expand=True)
         self.heading_label = self.label(
             compass_box, "—  /  planar, uncorrected", 10, CYAN
         )
@@ -204,10 +318,10 @@ class Dashboard:
             CYAN,
             anchor="w",
         )
-        self.timing.pack(fill="x", padx=28, pady=(10, 0))
+        self.timing.grid(row=4, column=0, sticky="ew", padx=28, pady=(10, 0))
 
         lower = tk.Frame(self.root, bg=BG)
-        lower.pack(fill="x", padx=28, pady=14)
+        lower.grid(row=5, column=0, sticky="ew", padx=28, pady=14)
         for i, (title, fields, unit) in enumerate(
             [
                 ("03  /  ACCELERATION", ("ax", "ay", "az"), "m/s²"),
@@ -227,7 +341,7 @@ class Dashboard:
                 self.values[key].pack(side="right")
 
         nav = tk.Frame(self.root, bg=PANEL, padx=16, pady=10)
-        nav.pack(fill="x", padx=28)
+        nav.grid(row=6, column=0, sticky="ew", padx=28)
         self.gps = self.label(nav, "GPS  /  awaiting position", 10, MUTED)
         self.gps.pack(anchor="w")
         self.angles = self.label(
@@ -238,7 +352,7 @@ class Dashboard:
             nav, "Reset angles", lambda: self.actions.model.reset_angles()
         ).pack(side="right")
         self.status = self.label(self.root, self.actions.notice, 9, MUTED, anchor="w")
-        self.status.pack(fill="x", padx=28, pady=(10, 16))
+        self.status.grid(row=7, column=0, sticky="ew", padx=28, pady=(10, 16))
 
     def build_details(self):
         """Add the complete raw table, gyro dials and independent camera tab."""
@@ -303,8 +417,9 @@ class Dashboard:
         c = self.dials
         c.delete("all")
         w, h = max(c.winfo_width(), 300), max(c.winfo_height(), 100)
-        radius = max(15, min(w / 8, (h - 65) / 2))
-        cy = (h - 20) / 2
+        scale = self.ui_scale
+        radius = max(15, min(w / 8, (h - 65 * scale) / 2))
+        cy = (h - 20 * scale) / 2
         calibrated = len(model.samples) == 300
         for i, (axis, value) in enumerate(zip("XYZ", model.angles)):
             cx = w * (i + 0.5) / 3
@@ -314,37 +429,76 @@ class Dashboard:
                 cx + radius,
                 cy + radius,
                 outline=LINE,
-                width=2,
+                width=max(1, round(2 * self.ui_scale)),
             )
             for degree in range(0, 360, 30):
                 angle = math.radians(degree)
+                tick_length = (12 if degree % 90 == 0 else 6) * scale
                 c.create_line(
-                    cx + (radius - 6) * math.cos(angle),
-                    cy - (radius - 6) * math.sin(angle),
+                    cx + (radius - tick_length) * math.cos(angle),
+                    cy - (radius - tick_length) * math.sin(angle),
                     cx + radius * math.cos(angle),
                     cy - radius * math.sin(angle),
-                    fill=MUTED,
+                    fill=CYAN if degree == 0 else MUTED,
+                    width=max(1, round((2 if degree % 90 == 0 else 1) * scale)),
                 )
             if calibrated:
-                angle = math.radians(value)
-                c.create_line(
-                    cx,
-                    cy,
-                    cx + (radius - 8) * math.cos(angle),
-                    cy - (radius - 8) * math.sin(angle),
-                    fill=CYAN,
-                    width=3,
-                    arrow="last",
-                )
+                self.draw_needle(c, cx, cy, radius, value)
             c.create_text(
                 cx,
-                h - 15,
+                h - 15 * scale,
                 text=(
                     f"{axis}  {value:+.1f}°" if calibrated else f"{axis}  calibrating…"
                 ),
                 fill=CYAN,
-                font=(self.font_family, -14),
+                font=self.ui_font(14),
             )
+
+    def draw_needle(self, canvas, cx, cy, radius, degrees):
+        scale = self.ui_scale
+        length = radius * 0.82
+        head_length = min(radius * 0.24, 22 * scale)
+        head_width = min(radius * 0.12, 9 * scale)
+        shaft_width = min(radius * 0.05, 3 * scale)
+        tail = min(radius * 0.15, 14 * scale)
+        shoulder = length - head_length
+        profile = (
+            (-tail, -shaft_width),
+            (shoulder, -shaft_width),
+            (shoulder, -head_width),
+            (length, 0),
+            (shoulder, head_width),
+            (shoulder, shaft_width),
+            (-tail, shaft_width),
+        )
+        # Rotate one filled silhouette, keeping the arrowhead proportional at any window size.
+        angle = math.radians(degrees)
+        dx, dy = math.cos(angle), -math.sin(angle)
+        points = []
+        for along, across in profile:
+            points.extend(
+                (cx + along * dx - across * dy, cy + along * dy + across * dx)
+            )
+        canvas.create_polygon(points, fill=CYAN, outline="", tags="needle")
+        hub = min(radius * 0.12, 7 * scale)
+        canvas.create_oval(
+            cx - hub,
+            cy - hub,
+            cx + hub,
+            cy + hub,
+            fill=PANEL,
+            outline=CYAN,
+            width=max(1, round(2 * scale)),
+            tags="needle-hub",
+        )
+        canvas.create_oval(
+            cx - hub * 0.35,
+            cy - hub * 0.35,
+            cx + hub * 0.35,
+            cy + hub * 0.35,
+            fill=TEXT,
+            outline="",
+        )
 
     @staticmethod
     def number(value, places=2):
@@ -409,44 +563,52 @@ class Dashboard:
         c.delete("all")
         cw, ch = c.winfo_width(), c.winfo_height()
         cx, cy = cw / 2, ch / 2
-        radius = max(30, min(cw, ch) / 2 - 30)
-        for r in (radius, radius + 12):
-            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=LINE)
-        for text, x, y in [
-            ("N", cx, cy - radius - 23),
-            ("E", cx + radius + 23, cy),
-            ("S", cx, cy + radius + 23),
-            ("W", cx - radius - 23, cy),
-        ]:
-            c.create_text(x, y, text=text, fill=MUTED, font=(self.font_family, -13))
-        if math.isfinite(d["head"]):
-            angle = math.radians(d["head"])
-            c.create_line(
-                cx,
-                cy,
-                cx + radius * math.sin(angle),
-                cy - radius * math.cos(angle),
-                fill=CYAN,
-                width=3,
-                arrow="last",
+        scale = self.ui_scale
+        radius = max(30, min(cw, ch) * 0.4 - 30 * scale)
+        for r in (radius, radius + 12 * scale):
+            c.create_oval(
+                cx - r,
+                cy - r,
+                cx + r,
+                cy + r,
+                outline=LINE,
+                width=max(1, round(2 * scale)),
             )
+        for text, x, y in [
+            ("N", cx, cy - radius - 23 * scale),
+            ("E", cx + radius + 23 * scale, cy),
+            ("S", cx, cy + radius + 23 * scale),
+            ("W", cx - radius - 23 * scale, cy),
+        ]:
+            c.create_text(x, y, text=text, fill=MUTED, font=self.ui_font(13))
+        if math.isfinite(d["head"]):
+            # Compass headings start at north and increase clockwise.
+            self.draw_needle(c, cx, cy, radius, 90 - d["head"])
             self.heading_label.config(
                 text=f"{d['head'] % 360:05.1f}°  /  planar, uncorrected"
             )
         else:
             self.heading_label.config(text="—  /  magnetic data unavailable")
-        c.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=TEXT, outline="")
+            c.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=TEXT, outline="")
 
     def draw_plot(self, history):
         """Plot recent finite altitudes with equal spacing between samples."""
         c = self.plot
         c.delete("all")
         w, h = max(c.winfo_width(), 200), max(c.winfo_height(), 150)
+        scale = self.ui_scale
+        left, top, bottom, right = 54 * scale, 20 * scale, 30 * scale, 10 * scale
         for i in range(5):
-            y = 20 + i * (h - 50) / 4
-            c.create_line(54, y, w - 10, y, fill=LINE)
+            y = top + i * (h - top - bottom) / 4
+            c.create_line(left, y, w - right, y, fill=LINE)
         if len(history) < 2:
-            c.create_text(w / 2, h / 2, text="AWAITING TELEMETRY", fill=MUTED)
+            c.create_text(
+                w / 2,
+                h / 2,
+                text="AWAITING TELEMETRY",
+                fill=MUTED,
+                font=self.ui_font(13),
+            )
             return
         vals = [v for _, v in history]
         low, high = min(vals) - 1, max(vals) + 1
@@ -454,19 +616,24 @@ class Dashboard:
         for i, v in enumerate(vals):
             points.extend(
                 (
-                    54 + i * (w - 64) / (len(vals) - 1),
-                    h - 30 - (v - low) * (h - 50) / (high - low),
+                    left + i * (w - left - right) / (len(vals) - 1),
+                    h - bottom - (v - low) * (h - top - bottom) / (high - low),
                 )
             )
-        c.create_line(*points, fill=CYAN, width=2, smooth=False)
-        c.create_text(25, 20, text=f"{high:.0f}", fill=MUTED)
-        c.create_text(25, h - 30, text=f"{low:.0f}", fill=MUTED)
+        c.create_line(*points, fill=CYAN, width=max(1, round(2 * scale)), smooth=False)
         c.create_text(
-            w - 12,
-            h - 10,
+            25 * scale, top, text=f"{high:.0f}", fill=MUTED, font=self.ui_font(12)
+        )
+        c.create_text(
+            25 * scale, h - bottom, text=f"{low:.0f}", fill=MUTED, font=self.ui_font(12)
+        )
+        c.create_text(
+            w - 12 * scale,
+            h - 10 * scale,
             anchor="e",
             text="m  /  latest 240 received samples",
             fill=MUTED,
+            font=self.ui_font(12),
         )
 
     def reset_fields(self, model):

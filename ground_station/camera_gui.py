@@ -31,7 +31,7 @@ class CameraPanel:
             bg=bg,
             fg=text,
             insertbackground=accent,
-            font=(app.font_family, -13),
+            font=app.ui_font(13),
             width=36,
         )
         self.url.insert(0, "http://192.168.4.1/capture")
@@ -87,7 +87,7 @@ class CameraPanel:
                 h / 2,
                 text="NO CAMERA IMAGE / connect the camera Wi-Fi and start preview",
                 fill=self.muted,
-                font=(self.app.font_family, -13),
+                font=self.app.ui_font(13),
             )
             return
         image = self.frame[1].copy()

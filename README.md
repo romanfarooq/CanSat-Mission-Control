@@ -2,9 +2,7 @@
 
 CanSat Mission Control brings together Arduino C++ firmware and a Python Tkinter ground station for an ESP32-based CanSat. Onboard sensors measure temperature, pressure, altitude, acceleration, angular velocity, magnetic field and GPS position. The sensor board transmits these readings over ESP-NOW to an ESP32 ground receiver, which forwards them to the computer through USB.
 
-The dashboard displays live telemetry, altitude history, magnetic heading and gyro calibration, while recording raw readings to timestamped CSV files for later analysis. A separate ESP32-CAM payload adds Wi-Fi camera preview and photo saving. The application also includes a clearly labelled demo mode for exploring the telemetry interface without connecting hardware.
-
-![Mission Control dashboard showing synthetic demo telemetry](dashboard.png)
+The dashboard displays live telemetry, altitude history, magnetic heading and gyro calibration, while recording raw readings to timestamped CSV files for later analysis. A separate ESP32-CAM payload adds Wi-Fi camera preview and photo saving. Onboard microSD recording keeps sensor CSV files and automatically captured camera photos even when the ground station is disconnected. The application also includes a clearly labelled demo mode for exploring the telemetry interface without connecting hardware.
 
 ## Quick start: demo
 
@@ -16,9 +14,9 @@ python -m venv .venv
 
 Activate it for your operating system:
 
-| Operating system | Activation command |
-| --- | --- |
-| Linux / macOS | `source .venv/bin/activate` |
+| Operating system   | Activation command             |
+| ------------------ | ------------------------------ |
+| Linux / macOS      | `source .venv/bin/activate`    |
 | Windows PowerShell | `.\.venv\Scripts\Activate.ps1` |
 
 Install the desktop dependencies and start the demo:
@@ -33,28 +31,31 @@ No board or PlatformIO installation is needed for the demo. The telemetry is lab
 ## Contents
 
 - [Quick start: demo](#quick-start-demo)
-- [Features](#what-it-does)
+- [Features](#features)
 - [System architecture](#system-architecture)
-- [Project structure](#simple-project-structure)
+- [Project structure](#project-structure)
 - [Code organization](#code-organization)
 - [Sensors and telemetry](#sensors-and-telemetry)
-- [Hardware and board roles](#1-prepare-the-hardware-and-settings)
-- [Build and upload firmware](#2-build-arduino-c-firmware)
-- [Run the ground station](#3-run-the-ground-station)
+- [GUI screenshots](#gui-screenshots)
+- [1. Prepare the hardware and settings](#1-prepare-the-hardware-and-settings)
+- [2. Build Arduino C++ firmware](#2-build-arduino-c-firmware)
+- [3. Run the ground station](#3-run-the-ground-station)
+- [Onboard SD recording](#onboard-sd-recording)
 - [Camera payload](#camera-payload)
 - [CSV and protocol](#csv-and-protocol)
 - [Calibration and limits](#calibration-and-limits)
 - [Troubleshooting](#troubleshooting)
-- [Checks and verification](#checks)
-- [Background and references](#project-background-and-references)
+- [Tests and verification](#tests-and-verification)
+- [Project background and references](#project-background-and-references)
 
-## What it does
+## Features
 
 - BMP085/BMP180 temperature, pressure and barometric altitude.
 - MPU6050 acceleration and angular velocity; QMC5883L magnetic field and planar heading.
 - GPS position, altitude and satellite count through UART2 and NeoGPS.
 - Fixed 76-byte telemetry packets over ESP-NOW, then USB serial at 115200 baud.
-- Separate ESP32-CAM camera firmware with Wi-Fi JPEG preview and photo saving.
+- Sensor-board microSD telemetry recording, independent of radio reception and the computer.
+- Separate ESP32-CAM camera firmware with Wi-Fi JPEG preview and automatic microSD photos every 15 seconds.
 - One space-themed window: telemetry cards, altitude trace, compass, sensor axes and GPS.
 - Stationary 300-sample gyro bias calibration and body-axis angle integration.
 - Raw packet CSV logging with UTC receive timestamps; separate, clearly marked demo mode.
@@ -71,9 +72,13 @@ flowchart LR
         gps["GPS module<br/>Position, altitude and satellite count"]
         transmitter["Sensor ESP32<br/>cansat.cpp"]
         camera["ESP32-CAM + OV2640<br/>camera.cpp"]
+        sensorSd[("Sensor microSD<br/>/flights/*.csv")]
+        cameraSd[("Camera microSD<br/>/photos/flight_*/*.jpg")]
 
         sensors -->|I2C| transmitter
         gps -->|UART2 · 9600 baud| transmitter
+        transmitter -->|SPI · queued telemetry| sensorSd
+        camera -->|SD_MMC · timed photos| cameraSd
     end
 
     receiver["Ground receiver ESP32<br/>receiver.cpp"]
@@ -98,12 +103,12 @@ flowchart LR
 
     class sensors,gps,transmitter,camera hardware
     class receiver,gui station
-    class csv,photos storage
+    class csv,photos,sensorSd,cameraSd storage
 ```
 
 The ground receiver stays connected through USB while the computer joins the camera's Wi-Fi. Camera images are transferred independently of the 76-byte telemetry stream.
 
-## Simple project structure
+## Project structure
 
 ```text
 .
@@ -113,11 +118,14 @@ The ground receiver stays connected through USB while the computer joins the cam
 ├── firmware/
 │   ├── include/
 │   │   ├── config.h          # Sensor MAC, pins, channel, intervals and altitude
-│   │   ├── camera.h          # Camera pins and Wi-Fi settings
+│   │   ├── camera.h          # Camera pins, Wi-Fi and photo recording
+│   │   ├── flight_id.h       # Device identity and persistent flight counter
+│   │   ├── telemetry_log.h   # SD recorder interface called by cansat.cpp
 │   │   ├── telemetry.h       # Shared, size-checked wire format
 │   │   └── radio.h           # Shared radio setup
 │   └── src/
-│       ├── cansat.cpp        # One BMP-enabled transmitter
+│       ├── cansat.cpp        # Sensor sampling and radio transmission
+│       ├── telemetry_log.cpp # Background SD CSV recorder
 │       ├── receiver.cpp      # Radio to binary USB bridge
 │       ├── mac_address.cpp   # Receiver MAC discovery tool
 │       └── camera.cpp        # Separate AI Thinker ESP32-CAM payload
@@ -129,7 +137,7 @@ The ground receiver stays connected through USB while the computer joins the cam
 │   ├── camera_reader.py      # Background HTTP/JPEG reader
 │   ├── serial_reader.py      # Serial worker and raw CSV writer
 │   └── telemetry.py          # Binary decoder and gyro state
-├── dashboard.png             # Synthetic-demo screenshot used by this README
+├── screenshots/              # Flight overview, All telemetry, Gyro angles and Camera screenshots
 ├── tests/                    # Parser, integration and serial-to-CSV checks
 └── .github/workflows/        # Firmware and Python checks on GitHub
 ```
@@ -140,7 +148,9 @@ Generated `logs/`, `.pio/`, Python caches and virtual environments are ignored b
 
 Run `ground_station/main.py` to start the application. `mission_control.py` manages live/demo sessions, packet processing and worker shutdown. `dashboard.py` builds and refreshes the Tk widgets. Serial I/O and CSV recording live in `serial_reader.py`; packet decoding and gyro calibration live in `telemetry.py`. The camera has its own tab and HTTP worker in `camera_gui.py` and `camera_reader.py`.
 
-Workers send data through queues; all widget updates run on Tk's main thread. The firmware remains one program per board or utility: sensor transmitter, receiver, camera and MAC discovery. Shared headers define configuration, radio settings and the fixed telemetry format.
+Workers send data through queues; all widget updates run on Tk's main thread. The firmware remains one program per board or utility: sensor transmitter, receiver, camera and MAC discovery. Shared headers define configuration, radio settings and the fixed telemetry format. `telemetry_log.cpp` owns the sensor SD recorder and its background writer task; camera storage stays with the camera program.
+
+`cansat.cpp` includes `telemetry_log.h` and calls `TelemetryLog::begin()` during setup and `TelemetryLog::enqueue(packet)` after sampling. PlatformIO compiles both `.cpp` files in the `cansat` environment and links them into one firmware image for a single upload.
 
 Source comments explain timing, calibration, buffer ownership and hardware assumptions. `.editorconfig` specifies spaces and line endings; `.clang-format` keeps C++ formatting consistent. Python uses four-space indentation, and C++ uses two spaces with opening braces on their own lines.
 
@@ -185,11 +195,11 @@ Allow the GPS receiver to obtain a valid fix before expecting position data. Una
 
 ### Derived readouts
 
-| Readout | Meaning |
-| --- | --- |
-| Update rate | Rate estimated from recent positive hardware timestamp intervals |
-| Magnetic magnitude | Combined magnitude of the three magnetic axes, in µT |
-| Integrated gyro angles | Accumulated bias-adjusted body-axis rotation, in degrees |
+| Readout                | Meaning                                                          |
+| ---------------------- | ---------------------------------------------------------------- |
+| Update rate            | Rate estimated from recent positive hardware timestamp intervals |
+| Magnetic magnitude     | Combined magnitude of the three magnetic axes, in µT             |
+| Integrated gyro angles | Accumulated bias-adjusted body-axis rotation, in degrees         |
 
 [CSV and protocol](#csv-and-protocol) defines the hardware, software and UTC timestamps. Sensor values are logged as received; gyro bias adjustment and angle integration are display calculations.
 
@@ -200,18 +210,47 @@ Allow the GPS receiver to obtain a valid fix before expecting position data. Una
 - **Gyro angles:** X/Y/Z integrated-angle dials with calibration status and angle reset.
 - **Camera:** independent camera connection, JPEG preview and photo saving.
 
+Click **Fullscreen (F11)** in the window header or press **F11** to toggle fullscreen. Press **Esc** or click **Exit fullscreen** to return to the window. Text, controls, chart labels and telemetry rows scale automatically with the window size. Choose **Small**, **Medium**, **Auto**, **Large** or **Extra large** from **TEXT SIZE**. Auto follows the window size; the other options reduce or increase that automatic size.
+
 The timing strip shows hardware/software milliseconds, magnetic magnitude and update rate. Sensor values come from the connected hardware during live operation; **Demo** mode generates clearly labelled synthetic telemetry.
+
+## GUI screenshots
+
+### Flight overview
+
+The main dashboard displays altitude, temperature, pressure and satellite count alongside the altitude history plot and magnetic compass. Motion and magnetic readings, GPS coordinates, integrated gyro angles and timing information provide a live flight summary. The ground-link controls select the receiver, start a connection or demo, and adjust text size.
+
+![Flight overview showing synthetic demo telemetry](screenshots/flight-overview.png)
+
+
+### All telemetry
+
+Raw sensor readings, units and timestamps are shown in a scrollable table.
+
+![All telemetry tab with synthetic sensor readings](screenshots/all-telemetry.png)
+
+### Gyro angles
+
+The three dials display integrated body-axis rotation after gyro calibration, with the updated needles and center hubs.
+
+![Gyro angles tab with calibrated demo dials](screenshots/gyro-angles.png)
+
+### Camera
+
+Camera connection, preview and photo-saving controls. This screenshot shows the offline state with no camera payload connected.
+
+![Camera tab showing its offline controls](screenshots/camera.png)
 
 ## 1. Prepare the hardware and settings
 
 For sensor telemetry, use **two compatible classic ESP32 boards**, a BMP085/BMP180, MPU6050, QMC5883L and NMEA GPS module. Add a separate **AI Thinker ESP32-CAM with OV2640** for camera preview. Keep the ground receiver attached to the computer through a USB data cable.
 
-| Physical board | Build target | Source file | Role |
-| --- | --- | --- | --- |
-| CanSat sensor ESP32 | `cansat` | `firmware/src/cansat.cpp` | Sample sensors and transmit telemetry over ESP-NOW |
-| Ground receiver ESP32 | `receiver` | `firmware/src/receiver.cpp` | Receive telemetry and forward it to the computer through USB |
-| Optional ESP32-CAM payload | `camera` | `firmware/src/camera.cpp` | Capture JPEG images and provide the camera Wi-Fi access point |
-| Ground receiver ESP32, during setup | `mac_address` | `firmware/src/mac_address.cpp` | Print its station MAC; replace this utility with `receiver` afterward |
+| Physical board                      | Build target  | Source file                                     | Role                                                                  |
+| ----------------------------------- | ------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
+| CanSat sensor ESP32                 | `cansat`      | `firmware/src/cansat.cpp` + `telemetry_log.cpp` | Sample sensors, record SD telemetry and transmit over ESP-NOW         |
+| Ground receiver ESP32               | `receiver`    | `firmware/src/receiver.cpp`                     | Receive telemetry and forward it to the computer through USB          |
+| Optional ESP32-CAM payload          | `camera`      | `firmware/src/camera.cpp`                       | Record timed JPEG photos and provide the camera Wi-Fi access point    |
+| Ground receiver ESP32, during setup | `mac_address` | `firmware/src/mac_address.cpp`                  | Print its station MAC; replace this utility with `receiver` afterward |
 
 MAC discovery reuses the ground receiver; it does not require a fourth board. The complete camera-enabled system uses three physical boards.
 
@@ -223,19 +262,21 @@ MAC discovery reuses the ground receiver; it does not require a fourth board. Th
 | GPS to ESP32 RX     | GPS TX → GPIO16                                                                    |
 | ESP32 TX to GPS     | GPIO17 → GPS RX, if required by your GPS module                                    |
 | GPS UART            | UART2, 9600 baud, 8N1                                                              |
+| Sensor SD module    | SPI: SCK GPIO18, MISO GPIO19, MOSI GPIO23, CS GPIO5; confirm PCB wiring            |
 | Buzzer              | GPIO4, short startup pulse only                                                    |
 | Receiver status LED | GPIO2; availability/polarity depends on board                                      |
 | Radio               | Same channel at both ends; default 1, standard 802.11b/g/n                         |
 | USB serial          | 115200 baud, 8N1                                                                   |
 
-Check your module power requirements and wiring. **CSV is stored on the computer while the live app is connected.** There is no onboard SD recorder.
+Check your module power requirements and wiring. **The sensor SD module and camera card slot belong to different boards.** Each can record locally; the desktop also records its own files while connected. See [Onboard SD recording](#onboard-sd-recording).
 
 Edit `firmware/include/config.h`:
 
-- `receiverMac`: your receiver's station MAC; initially all zero, so the transmitter refuses to start until configured.
+- `receiverMac`: your receiver's station MAC; initially all zero, which disables radio transmission until configured. Sensor sampling and onboard logging can still run.
 - `channel`: same value for transmitter and receiver.
 - `referenceAltitudeM`: known launch-site altitude in metres; the default 10 m is an example, not a measured site value.
 - GPS/buzzer/LED pins and sampling intervals as needed for your hardware.
+- `sdEnabled`, `sdCs`, `sdSck`, `sdMiso`, `sdMosi` and `sdFlushMs`: sensor-board card settings.
 
 ## 2. Build Arduino C++ firmware
 
@@ -252,16 +293,16 @@ The first build downloads the ESP32 toolchain and pinned sensor packages. All fi
 
 The project pins `espressif32@6.12.0` and its Arduino-ESP32 2.0.17 framework. The receiver also contains the newer core 3.x receive-signature branch, but the pinned 2.0.17 toolchain is the supported build configuration. See [PlatformIO's ESP32 documentation](https://docs.platformio.org/en/latest/platforms/espressif32.html).
 
-| Dependency                   | Version            | Purpose                                                                             |
-| ---------------------------- | ------------------ | ----------------------------------------------------------------------------------- |
-| Adafruit BMP085 Library      | 1.2.4              | BMP085/BMP180 sensor                                                                |
-| Adafruit MPU6050             | 2.2.6              | Motion sensor                                                                       |
-| Adafruit Unified Sensor      | 1.1.15             | Sensor event types and units                                                        |
-| Adafruit BusIO               | 1.17.2             | I2C/SPI transport support                                                           |
-| NeoGPS                       | 4.2.9              | GPS sentence parsing                                                                |
-| ESP32 Arduino core libraries | Framework supplied | Wire, WiFi, HardwareSerial, ESP-NOW, WebServer and the `esp_camera.h` camera driver |
+| Dependency                   | Version            | Purpose                                                                                             |
+| ---------------------------- | ------------------ | --------------------------------------------------------------------------------------------------- |
+| Adafruit BMP085 Library      | 1.2.4              | BMP085/BMP180 sensor                                                                                |
+| Adafruit MPU6050             | 2.2.6              | Motion sensor                                                                                       |
+| Adafruit Unified Sensor      | 1.1.15             | Sensor event types and units                                                                        |
+| Adafruit BusIO               | 1.17.2             | I2C/SPI transport support                                                                           |
+| NeoGPS                       | 4.2.9              | GPS sentence parsing                                                                                |
+| ESP32 Arduino core libraries | Framework supplied | Wire, WiFi, HardwareSerial, ESP-NOW, WebServer, FS, SPI, SD, SD_MMC, Preferences and `esp_camera.h` |
 
-### Install firmware libraries
+### Firmware libraries and installation
 
 The dependency table above matches `platformio.ini`. `pio run` automatically installs the declared packages. To install them separately without compiling or flashing, run:
 
@@ -273,7 +314,7 @@ PlatformIO puts downloaded sensor libraries in `.pio/libdeps/cansat/`. ESP32 fra
 
 `requirements.txt` installs **Python desktop packages**; `platformio.ini` installs **Arduino firmware libraries**. They are separate dependency lists. Use the declared PlatformIO dependencies to keep sensor-driver versions consistent. ESP32 core libraries are supplied by the framework.
 
-### Find the receiver MAC, then upload the sensor and receiver programs
+### Receiver MAC and firmware upload
 
 List ports:
 
@@ -318,14 +359,14 @@ python -m tkinter
 
 Close the test window before starting Mission Control. If the module is missing:
 
-| Operating system | Tcl/Tk setup |
-| --- | --- |
-| Fedora | Install `python3-tkinter` with the system package manager |
-| Debian / Ubuntu | Install `python3-tk` with the system package manager |
-| Windows | Include Tcl/Tk when installing Python |
-| macOS | Use a Python distribution that includes Tcl/Tk |
+| Operating system | Tcl/Tk setup                                              |
+| ---------------- | --------------------------------------------------------- |
+| Fedora           | Install `python3-tkinter` with the system package manager |
+| Debian / Ubuntu  | Install `python3-tk` with the system package manager      |
+| Windows          | Include Tcl/Tk when installing Python                     |
+| macOS            | Use a Python distribution that includes Tcl/Tk            |
 
-### Start live telemetry
+### Live telemetry and recording
 
 For real telemetry:
 
@@ -350,9 +391,72 @@ The altitude plot shows the latest 240 finite received altitude samples, equally
 python ground_station/main.py --log-dir /path/to/flight-logs
 ```
 
+## Onboard SD recording
+
+Two separate cards serve the two payload boards. Prepare them as **FAT32**, insert them before powering the boards and use a card reader to retrieve the files after recovery. Firmware never formats a card or overwrites a previous numbered flight. To disable either recorder, set `sdEnabled = false` in that board's header and rebuild.
+
+### SD hardware and connections
+
+The supplied sensor sketch uses **CS GPIO5**. This project makes the other classic ESP32 SPI defaults explicit: **SCK18, MISO19 and MOSI23**. Check these against your kit PCB before uploading; change them in `firmware/include/config.h` if needed. These assignments apply to the sensor board, not the ESP32-CAM slot.
+
+The AI Thinker slot uses **1-bit SD_MMC**: CLK GPIO14, CMD GPIO15 and D0 GPIO2. GPIO4, shared with the flash LED in 4-bit mode, is excluded from this bus.
+
+### SD libraries
+
+The pinned ESP32 Arduino framework includes **SD 2.0.0** for the sensor board's SPI card module and **SD_MMC 2.0.0** for the ESP32-CAM card slot, together with FS and SPI. `pio run` installs these libraries automatically with the framework. They do not need separate entries in `lib_deps` or `requirements.txt`. See Espressif's [SPI SD example](https://github.com/espressif/arduino-esp32/blob/2.0.17/libraries/SD/examples/SD_Test/SD_Test.ino) and [SD_MMC example](https://github.com/espressif/arduino-esp32/blob/2.0.17/libraries/SD_MMC/examples/SDMMC_Test/SDMMC_Test.ino) for the underlying storage APIs.
+
+### SD recording and configuration
+
+| Recorder                     | Library supplied by the ESP32 framework | Files on that card                                                                    | Default behavior                                               |
+| ---------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Sensor ESP32 + SPI SD module | `SD.h`, `SPI.h`, `FS.h`                 | `/flights/flight_<device>_000001.csv`, with a persistent flight counter               | Records each sampled packet, independently of ESP-NOW delivery |
+| AI Thinker ESP32-CAM slot    | `SD_MMC.h`, `FS.h`                      | `/photos/flight_<device>_000001/photo_000001.jpg`, with a new flight folder on reboot | First photo at startup, then one every 15 seconds              |
+
+Flight names use the board's 12-digit hexadecimal device identity and a counter saved in ESP32 [Preferences/NVS](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html), for example `flight_112233445566_000001`. `flight_id.h` reserves the next number once during recorder startup; it does not scan the SD card or search through possible names. The counter survives normal power cycles and card changes. Failed starts can leave gaps in the sequence. Legacy folders with names such as `flight_000001` remain untouched.
+
+A single existence check protects recordings if NVS is erased or reset. If the generated path already exists, recording stays off for that boot and serial diagnostics explain the collision; archive or rename the conflicting file/folder before restarting. Failure to save the counter also disables recording. Radio telemetry and camera preview can continue.
+
+#### Sensor telemetry
+
+The onboard CSV contains all 17 raw telemetry values plus `HardwareTimestamp`, in the same order as the desktop's sensor columns. Float32 readings use nine significant digits; unavailable readings remain `nan`. `HardwareTimestamp` is milliseconds since sensor-board boot and wraps after approximately 49.7 days. The card file has no PC receive time, `Source` or `PythonTimestamp` columns because it is recorded before reception on the computer.
+
+Sampling copies packets into a **32-entry FreeRTOS queue** without waiting for the card. A background task writes and flushes the file every **1 second**. If the queue fills, the newest SD copy is skipped and the sensor serial monitor reports `SD copies skipped`; transmission continues. A missing card does not prevent sampling or radio operation. A detected short write stops the recorder and prints an error. Restart the board after fixing or replacing the card; hot-swapping and automatic remounting are not supported.
+
+#### Camera photos
+
+Configure recording with `sdEnabled` and `photoIntervalMs` in `firmware/include/camera.h`. The default 15-second interval is measured from each capture attempt; HTTP handling and card writes can delay it. This is timed JPEG photography; video recording is not implemented.
+
+Recording begins without joining Wi-Fi or opening the GUI and continues if the camera access point fails to start. A missing card leaves preview available. Each image file closes after writing; a detected partial write removes the incomplete file and stops recording until reboot. A failed camera capture is retried at the next interval. Serial diagnostics report saved paths and errors. The `/health` endpoint also reports `sd_ready`, `photos_saved` and `photo_errors`; these are camera status fields and are not added to the telemetry packet or GUI.
+
+The two boards keep their own persistent flight counters. Their folder numbers and boot clocks are not synchronized. Desktop **Save photo** still saves the currently received JPEG to the computer; stopping the desktop preview does not stop autonomous camera recording.
+
+### SD recording checks
+
+1. Boot both boards with prepared cards; read their 115200-baud serial messages for the new file and directory paths.
+2. Leave the PC disconnected for at least 35 seconds. Power down and retrieve a sensor CSV and at least three camera JPEGs, including the startup photo.
+3. Reboot with the same cards and confirm new flight numbers appear while earlier files remain.
+4. Boot without cards and verify radio telemetry and camera preview still work. Confirm that the camera `/health` response reports `sd_ready: false`.
+5. Run telemetry and camera preview while recording, then inspect the files and sensor `SD copies skipped` counter for gaps.
+
+Power off the boards before removing their cards. Telemetry is buffered and flushed every second; sudden power loss can discard pending rows, interrupt a photo write or damage filesystem metadata. Include card compatibility, full-card behavior and power-loss recovery in your hardware tests.
+
 ## Camera payload
 
 The **Camera** tab receives real JPEG images from a separate **AI Thinker ESP32-CAM / OV2640** payload. Its pins and Wi-Fi settings are in `firmware/include/camera.h`.
+
+### Camera hardware and connections
+
+This project uses a separate **AI Thinker ESP32-CAM with an OV2640 camera sensor** as its camera payload. The [SRC-UCP CK-2508 kit](https://sites.google.com/view/space4all/cansat/) includes a downward-looking remote-sensing camera payload, and [RESOLVE's camera challenge, page 6](https://resolve.uet.edu.pk/wp-content/uploads/2025/09/WSW_Challenges_For_Website_15-9-25.pdf) uses a separately mounted ESP32-CAM for onboard image capture.
+
+`firmware/include/camera.h` uses [Espressif's Arduino-ESP32 2.0.17 AI Thinker pin map](https://github.com/espressif/arduino-esp32/blob/2.0.17/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h). Upload the `camera` target to the ESP32-CAM and the `cansat` target to the sensor ESP32. GPIO21/22 serve camera signals on the camera board and I2C on the sensor board; the two boards have separate pin assignments.
+
+The [system architecture](#system-architecture) shows how the camera link and sensor telemetry reach the same ground station computer.
+
+### Camera libraries
+
+The camera uses [Espressif's `esp32-camera` driver](https://github.com/espressif/esp32-camera) included with the installed Arduino framework. Desktop JPEG decoding uses Pillow 12.0.0 from `requirements.txt`; HTTP networking uses Python's standard library.
+
+### Camera upload and configuration
 
 Install the desktop dependencies through [Quick start](#quick-start-demo), then build and upload the camera firmware:
 
@@ -360,22 +464,6 @@ Install the desktop dependencies through [Quick start](#quick-start-demo), then 
 pio run -e camera
 pio run -e camera -t upload --upload-port /dev/ttyUSB0
 ```
-
-Power the camera, connect your computer to its `CanSat-Camera` Wi-Fi (default password `cansat-view`), open the Camera tab and click **Start camera** with `http://192.168.4.1/capture`. Change the password in `camera.h` before deployment. Keep the sensor ground receiver connected through USB. **Save photo** writes the original received JPEG into `logs/photos/`; **Stop camera** leaves sensor telemetry running.
-
-This feature provides live JPEG refresh and PC photo saving; onboard SD/video recording is not implemented. The [system architecture](#system-architecture) shows the independent camera and sensor data paths.
-
-### Camera board evidence and architecture
-
-The [SRC-UCP CK-2508 kit page](https://sites.google.com/view/space4all/cansat/) identifies a downward-looking remote-sensing camera payload. [RESOLVE's published 2025 challenge, page 6](https://resolve.uet.edu.pk/wp-content/uploads/2025/09/WSW_Challenges_For_Website_15-9-25.pdf) specifies a separately mounted ESP32-CAM. The supplied camera example selects AI Thinker ESP32-CAM with OV2640. That evidence supports this build target; it does not independently verify the exact board revision in every kit.
-
-The camera pin map was checked against [Espressif's Arduino-ESP32 2.0.17 AI Thinker definitions](https://github.com/espressif/arduino-esp32/blob/2.0.17/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h). Camera GPIO21/22 and other pins overlap with sensor-board defaults, so keep the two board programs and their pin assignments separate.
-
-The [system architecture](#system-architecture) shows how the camera link and sensor telemetry reach the same ground station computer.
-
-The camera uses [Espressif's `esp32-camera` driver](https://github.com/espressif/esp32-camera) included with the installed Arduino framework. Desktop JPEG decoding uses Pillow 12.0.0 from `requirements.txt`; HTTP networking uses Python's standard library.
-
-### Camera upload and preview details
 
 Use the camera board's supported USB programming adapter. Classic AI Thinker modules commonly need GPIO0 held low during reset for uploading; release it and reset for normal operation. Follow your actual board and adapter's power/programming instructions. Read startup diagnostics with:
 
@@ -393,11 +481,17 @@ The firmware prints its Wi-Fi access point and capture URL. Capture uses JPEG at
 | JPEG endpoint   | `http://192.168.4.1/capture`                         |
 | Health endpoint | `http://192.168.4.1/health`                          |
 
+### Camera preview and photo saving
+
+Power the camera, connect your computer to its `CanSat-Camera` Wi-Fi (default password `cansat-view`), open the Camera tab and click **Start camera** with `http://192.168.4.1/capture`. Change the password in `camera.h` before deployment. Keep the sensor ground receiver connected through USB. **Save photo** writes the original received JPEG into `logs/photos/`; **Stop camera** leaves sensor telemetry running.
+
+This feature provides live JPEG refresh, PC photo saving and autonomous onboard JPEG recording as described in [Onboard SD recording](#onboard-sd-recording). Video recording is not implemented. The [system architecture](#system-architecture) shows the independent camera and sensor data paths.
+
 The computer may report that this Wi-Fi has no internet; local camera access still works. The HTTP service has no authentication beyond joining the Wi-Fi network. No router or external trigger is required for preview.
 
 The GUI targets up to four JPEG fetches per second, retains only the latest frame, and rejects non-JPEG responses, responses over 512 KiB and images over two megapixels. On errors it shows the failure and automatically retries while active. The last image remains visible and a three-second gap is marked stale. Resize the window for a larger preview. **Save photo** preserves the original received JPEG bytes, not a screenshot; the output follows `--log-dir` if supplied.
 
-Camera and serial connections start and stop independently. Closing the window stops both workers. Telemetry Demo mode does not generate camera images; a separately connected camera can still provide real frames while sensor telemetry is in Demo mode. Simultaneous radio operation, range, power and image capture need physical validation.
+Camera and serial connections start and stop independently. Closing the window stops both workers. Telemetry Demo mode does not generate camera images; a separately connected camera can still provide real frames while sensor telemetry is in Demo mode. Test simultaneous telemetry, preview and SD recording before flight to check radio range, power stability and image capture timing.
 
 ## CSV and protocol
 
@@ -412,12 +506,12 @@ Each live connection creates `logs/cansat_<UTC date and time>.csv`. Each decoded
 | `sat`, `lat`, `lon`, `gpsAlt`  | satellite count, decimal degrees, decimal degrees, m           |
 | `HardwareTimestamp`            | uint32 milliseconds since CanSat boot                          |
 | `ReceivedUTC`                  | Computer UTC receive time in ISO 8601                          |
-| `Source` | `LIVE` for packets decoded from a serial connection |
+| `Source`                       | `LIVE` for packets decoded from a serial connection            |
 | `PythonTimestamp`              | Monotonic milliseconds since the live serial connection opened |
 
 The overview displays pressure in **hPa**; the raw table and CSV retain **Pa**. Timestamp columns use different clock references and do not establish radio latency or synchronized time. The [packet layout](#packet-layout) defines the binary fields; [sensor timing](#sensor-timing-and-missing-values) describes unavailable readings.
 
-### Example CSV
+### CSV example
 
 This illustrative row shows the actual column order; it is not a flight recording. `Source=LIVE` is the value the application writes for a serial connection. Demo mode does not export CSV.
 
@@ -471,24 +565,26 @@ The requested transmit interval is 50 ms (up to 20 Hz); blocking BMP conversions
 
 ## Troubleshooting
 
-| Symptom                               | Check                                                                                             |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| No serial ports                       | USB data cable, OS driver, board power, then Refresh                                              |
-| Port busy                             | Close serial monitors and other ground-station instances                                          |
-| Permission denied on Linux            | Check your distribution's serial-device group/permissions and sign in again after changing groups |
-| CanSat says configure MAC             | Replace the all-zero MAC in `config.h`, rebuild and upload                                        |
-| No telemetry                          | Correct receiver port and MAC, both boards on same channel, successful sensor setup               |
-| BMP/MPU/QMC initialization error      | Correct sensor identity, supply and I2C wiring; this version requires real BMP data               |
-| Binary characters in receiver monitor | Expected: use the Python app, then close the monitor                                              |
-| GPS shows dashes                      | Wait for a valid outdoor fix; check UART pins and 9600 baud                                       |
-| Gyro drifts                           | Reconnect and keep stationary for calibration; integration still accumulates error                |
-| No log file in demo                   | Expected; connect live serial to enable recording                                                 |
-| Missing `tkinter`                     | Install OS/Python Tcl/Tk support as described above                                               |
-| Camera offline                        | Power the separate camera board, join its Wi-Fi and use its `/capture` URL                        |
-| Camera initialization failure         | Confirm AI Thinker/OV2640 board and pin map, ribbon connection and suitable power supply          |
-| No onboard photos or video files      | This implementation saves photos on the PC; onboard recording is not implemented                  |
+| Symptom                               | Check                                                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| No serial ports                       | USB data cable, OS driver, board power, then Refresh                                                    |
+| Port busy                             | Close serial monitors and other ground-station instances                                                |
+| Permission denied on Linux            | Check your distribution's serial-device group/permissions and sign in again after changing groups       |
+| CanSat says configure MAC             | Replace the all-zero MAC in `config.h`, rebuild and upload; local SD logging can run without radio      |
+| No telemetry                          | Correct receiver port and MAC, both boards on same channel, successful sensor setup                     |
+| BMP/MPU/QMC initialization error      | Correct sensor identity, supply and I2C wiring; this version requires real BMP data                     |
+| Binary characters in receiver monitor | Expected: use the Python app, then close the monitor                                                    |
+| GPS shows dashes                      | Wait for a valid outdoor fix; check UART pins and 9600 baud                                             |
+| Gyro drifts                           | Reconnect and keep stationary for calibration; integration still accumulates error                      |
+| No log file in demo                   | Expected; connect live serial to enable recording                                                       |
+| Missing `tkinter`                     | Install OS/Python Tcl/Tk support as described above                                                     |
+| Camera offline                        | Power the separate camera board, join its Wi-Fi and use its `/capture` URL                              |
+| Camera initialization failure         | Confirm AI Thinker/OV2640 board and pin map, ribbon connection and suitable power supply                |
+| No onboard CSV or photos              | Check FAT32 cards, SD pins, `sdEnabled` and board serial diagnostics; reboot after correcting errors    |
+| No onboard video                      | Video recording is not implemented; the camera records timed JPEG photos                                |
+| SD copies skipped                     | The sensor card is too slow, its queue filled or its writer stopped; inspect serial errors and the card |
 
-## Checks
+## Tests and verification
 
 ```bash
 python -m unittest discover -s tests -v
@@ -497,28 +593,28 @@ pio run
 python tests/gui_smoke.py
 ```
 
-GitHub Actions runs the unit tests and firmware build on pushes and pull requests. It checks the project on a clean GitHub runner; it does not flash boards or run the desktop GUI. The current workflow does not publish downloadable firmware artifacts.
+GitHub Actions runs the unit tests and firmware build on pushes and pull requests. The SD logger tests compile the real C++ writer with a host filesystem/queue substitute; they need a host C++ compiler (`c++` by default, or select one with `CXX`). They are skipped if no compiler is available. This compiler is a test tool, not a firmware or desktop runtime dependency. It checks the project on a clean GitHub runner; it does not flash boards or run the desktop GUI. The current workflow does not publish downloadable firmware artifacts.
 
-### Verification
+### Local test results
 
-Local checks completed on **2026-10-22** using PlatformIO Core 6.1.18, Espressif32 6.12.0 and Arduino-ESP32 2.0.17. The sensor/receiver/discovery builds used the example `esp32dev` profile; the camera used `esp32cam`.
+Local checks completed on **2026-10-22** using PlatformIO Core 6.1.18 and 6.2.0, Espressif32 6.12.0 and Arduino-ESP32 2.0.17. The sensor/receiver/discovery builds used the example `esp32dev` profile; the camera used `esp32cam`.
 
 | Target        | Compile/link result | Static RAM             | Flash                     |
 | ------------- | ------------------- | ---------------------- | ------------------------- |
-| `cansat`      | PASS                | 44,292 / 327,680 bytes | 770,521 / 1,310,720 bytes |
+| `cansat`      | PASS                | 44,956 / 327,680 bytes | 834,213 / 1,310,720 bytes |
 | `receiver`    | PASS                | 43,492 / 327,680 bytes | 727,761 / 1,310,720 bytes |
 | `mac_address` | PASS                | 43,408 / 327,680 bytes | 722,745 / 1,310,720 bytes |
-| `camera`      | PASS                | 49,692 / 327,680 bytes | 856,961 / 3,145,728 bytes |
+| `camera`      | PASS                | 50,680 / 327,680 bytes | 943,521 / 3,145,728 bytes |
 
-All **11 automated tests passed** with Python 3.12, pyserial 3.5 and Pillow 12.0.0. They cover packet fragmentation/concatenation, noise recovery, bounded buffering, `NaN` GPS, gyro bias/integration and timestamp rollover, serial-to-CSV handling through a POSIX pseudo-terminal, missing ports, JPEG validation/size limits, HTTP failures/recovery and camera worker shutdown. The seven telemetry/serial tests also passed under Python 3.14.
+All **18 automated tests passed** with Python 3.12, pyserial 3.5 and Pillow 12.0.0. They cover packet fragmentation/concatenation, noise recovery, bounded buffering, `NaN` GPS, gyro bias/integration and timestamp rollover, serial-to-CSV handling through a POSIX pseudo-terminal, missing ports, JPEG validation/size limits, HTTP failures/recovery and camera worker shutdown. Seven SD logger tests additionally exercise the real C++ writer with simulated filesystem and queue operations: CSV field order/precision, packet copies and idle flushing, persistent naming and preserving previous flights after a counter reset, missing cards, file/header/task/queue/Preferences initialization failures and counter exhaustion, queue overflow and short-write shutdown. The seven telemetry/serial tests also passed under Python 3.14.
 
-The desktop smoke test passed with Python 3.12 and Tk 9.0. It checks telemetry rendering and tabs, all raw fields, timestamps and magnetic magnitude, angle dials/reset, session reset, connection/disconnection and CSV flush, camera preview from a local HTTP fixture, saving identical JPEG bytes, independent camera stopping and orderly window shutdown. The actual GUI was visually inspected at 1100 × 800; the screenshot above contains synthetic telemetry.
+The desktop smoke test passed with Python 3.12 and Tk 9.0. It checks fullscreen entry/exit, automatic and user-selected text scaling, footer visibility at 1080 × 800, telemetry rendering and tabs, all raw fields, timestamps and magnetic magnitude, angle dials/reset, session reset, connection/disconnection and CSV flush, camera preview from a local HTTP fixture, saving identical JPEG bytes, independent camera stopping and orderly window shutdown. The layout was checked at 1080 × 800 and fullscreen at 3072 × 1728. README screenshots show synthetic demo telemetry; the Camera tab is shown offline.
 
-The all-zero receiver MAC is an intentional placeholder: set the actual MAC before uploading the transmitter. Package-manager dependencies may include additional transitive versions; the verified firmware build selected the explicitly pinned BusIO 1.17.2. Generated build outputs, downloaded project libraries and Python caches remain ignored by Git.
+The all-zero receiver MAC is an intentional placeholder: set the actual MAC to enable transmission. Local sampling and SD recording can operate without radio. Package-manager dependencies may include additional transitive versions; the verified firmware build selected the explicitly pinned BusIO 1.17.2. Generated build outputs, downloaded project libraries and Python caches remain ignored by Git.
 
 ## Project background and references
 
-The package provides live sensor telemetry, desktop CSV logging and a separate ESP32-CAM payload. Board identity, sensor alignment and actual wiring must be confirmed against the physical kit.
+The package provides live sensor telemetry, onboard and desktop CSV logging, and a separate ESP32-CAM payload with timed onboard photos. Board identity, sensor alignment and actual wiring must be confirmed against the physical kit.
 
 ### CanSat, RESOLVE and SRC-UCP links
 

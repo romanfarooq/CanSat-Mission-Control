@@ -7,17 +7,20 @@
 #include <cstring>
 #include "radio.h"
 #include "telemetry.h"
+#include "telemetry_log.h"
 
 namespace
 {
   // Device objects and the latest values placed on the wire.
-  Adafruit_MPU6050 mpu;
   Adafruit_BMP085 bmp;
+  Adafruit_MPU6050 mpu;
   NMEAGPS gps;
-  HardwareSerial gpsSerial(2);
   Telemetry packet;
-  bool ready = false;
+  uint32_t sdSkipped = 0;
+  HardwareSerial gpsSerial(2);
   float seaLevelPressure;
+  bool ready = false;
+  bool radioReady = false, recordingStarted = false;
 
   // Unsigned millisecond differences remain valid across the millis() rollover.
   uint32_t lastSample = 0, lastEnvironment = 0;
@@ -93,6 +96,35 @@ namespace
     if (now - lastSatellites > Config::gpsTimeoutMs)
       packet.sat = 0;
   }
+
+  bool initializeReceiver()
+  {
+    bool configured = false;
+    for (auto byte : Config::receiverMac)
+      configured |= byte != 0;
+    if (!configured)
+    {
+      Serial.println("Set receiverMac in firmware/include/config.h to enable radio transmission.");
+      return false;
+    }
+
+    if (!startRadio())
+    {
+      Serial.println("Radio initialization failed; onboard logging can continue.");
+      return false;
+    }
+    esp_now_peer_info_t peer{};
+    memcpy(peer.peer_addr, Config::receiverMac, 6);
+    peer.channel = Config::channel;
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+    if (esp_now_add_peer(&peer) != ESP_OK)
+    {
+      Serial.println("Cannot add receiver peer; onboard logging can continue.");
+      return false;
+    }
+    return true;
+  }
 } // namespace
 
 void setup()
@@ -108,16 +140,6 @@ void setup()
   digitalWrite(Config::buzzer, LOW);
 
   packet.lat = packet.lon = packet.gpsAlt = NAN;
-
-  // A placeholder MAC must not silently send telemetry to an unintended peer.
-  bool configured = false;
-  for (auto byte : Config::receiverMac)
-    configured |= byte != 0;
-  if (!configured)
-  {
-    Serial.println("Set receiverMac in firmware/include/config.h first.");
-    return;
-  }
 
   // Sensor failures leave ready false; loop() will wait instead of transmitting zeros.
   if (!bmp.begin() || !mpu.begin())
@@ -141,22 +163,9 @@ void setup()
   seaLevelPressure = bmp.readSealevelPressure(Config::referenceAltitudeM);
   readEnvironment();
 
-  // Radio settings must match the receiver; peer registration selects its station MAC.
-  if (!startRadio())
-  {
-    Serial.println("Radio initialization failed.");
-    return;
-  }
-  esp_now_peer_info_t peer{};
-  memcpy(peer.peer_addr, Config::receiverMac, 6);
-  peer.channel = Config::channel;
-  peer.ifidx = WIFI_IF_STA;
-  peer.encrypt = false;
-  if (esp_now_add_peer(&peer) != ESP_OK)
-  {
-    Serial.println("Cannot add receiver peer.");
-    return;
-  }
+  // Local recording does not depend on a receiver, Wi-Fi or a connected PC.
+  recordingStarted = TelemetryLog::begin();
+  radioReady = initializeReceiver();
 
   ready = true;
   Serial.println("CanSat ready. Counters measure send requests, not radio delivery.");
@@ -205,15 +214,24 @@ void loop()
 
   // Timestamp after reads so it describes this assembled packet.
   packet.timestamp = millis();
-  if (esp_now_send(Config::receiverMac, reinterpret_cast<uint8_t *>(&packet), sizeof(packet)) == ESP_OK)
-    ++accepted;
-  else
-    ++rejected;
+  if (recordingStarted && !TelemetryLog::enqueue(packet))
+    ++sdSkipped;
+
+  if (radioReady)
+  {
+    if (esp_now_send(Config::receiverMac, reinterpret_cast<uint8_t *>(&packet), sizeof(packet)) ==
+        ESP_OK)
+      ++accepted;
+    else
+      ++rejected;
+  }
 
   // ESP_OK means the send request was accepted, not that the PC logged the packet.
   if (now - lastStatus >= 1000)
   {
-    Serial.printf("Send requests accepted=%lu rejected=%lu\n", (unsigned long)accepted, (unsigned long)rejected);
+    Serial.printf("Radio=%s send requests accepted=%lu rejected=%lu; SD copies skipped=%lu\n",
+                  radioReady ? "ready" : "off", (unsigned long)accepted, (unsigned long)rejected,
+                  (unsigned long)sdSkipped);
     lastStatus = now;
   }
 }

@@ -41,6 +41,70 @@ with tempfile.TemporaryDirectory() as directory:
         <= root.winfo_height()
     ), "Footer clipped"
     assert "DEMO" in app.view.link.cget("text")
+    window_font_size = abs(app.view.ui_font(13).cget("size"))
+    # The button stays available in fullscreen; keyboard shortcuts work from a child widget.
+    app.view.fullscreen_button.invoke()
+    pump(root, lambda: bool(root.attributes("-fullscreen")))
+    assert app.view.fullscreen
+    assert app.view.fullscreen_button.cget("text") == "Exit fullscreen (Esc)"
+    expected_scale = round(
+        max(1.0, min(root.winfo_width() / 1220, root.winfo_height() / 860, 2.5)), 2
+    )
+    pump(root, lambda: app.view.ui_scale == expected_scale)
+    root.update_idletasks()
+    assert (
+        abs(app.view.port.winfo_height() - app.view.connect_button.winfo_height()) <= 4
+    )
+    assert app.view.text_size.winfo_height() == app.view.port.winfo_height()
+    assert app.view.style.lookup(
+        "TNotebook.Tab", "padding", ("selected",)
+    ) == app.view.style.lookup("TNotebook.Tab", "padding", ("!selected",))
+    if expected_scale > 1.1:
+        assert abs(app.view.ui_font(13).cget("size")) > window_font_size
+    assert app.view.style.lookup("Telemetry.Treeview", "rowheight") == round(
+        25 * app.view.ui_scale
+    )
+    app.view.text_size.set("Extra large")
+    app.view.text_size.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert app.view.ui_scale > expected_scale
+    assert (
+        app.view.status.winfo_y() + app.view.status.winfo_height()
+        <= root.winfo_height()
+    )
+    app.view.text_size.set("Auto")
+    app.view.text_size.event_generate("<<ComboboxSelected>>")
+    app.view.port.focus_force()
+    app.view.port.event_generate("<Escape>")
+    pump(root, lambda: not root.attributes("-fullscreen"))
+    assert not app.view.fullscreen
+    app.view.port.event_generate("<F11>")
+    pump(root, lambda: bool(root.attributes("-fullscreen")))
+    assert app.view.fullscreen
+    app.view.fullscreen_button.invoke()
+    pump(root, lambda: not root.attributes("-fullscreen"))
+    assert not app.view.fullscreen
+    assert app.view.fullscreen_button.cget("text") == "Fullscreen (F11)"
+    # Larger fonts must leave room for the footer and the scrollable telemetry tab.
+    root.geometry("1080x800")
+    root.update()
+    app.view.text_size.set("Extra large")
+    app.view.text_size.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert app.view.ui_scale == 1.2
+    assert (
+        app.view.status.winfo_y() + app.view.status.winfo_height()
+        <= root.winfo_height()
+    )
+    assert app.view.notebook.winfo_height() > 50
+    assert (
+        app.view.fullscreen_button.winfo_width()
+        >= app.view.fullscreen_button.winfo_reqwidth()
+    )
+    app.view.text_size.set("Auto")
+    app.view.text_size.event_generate("<<ComboboxSelected>>")
+    root.geometry("1220x860")
+    root.update()
     assert set(FIELDS).issubset(app.view.raw_table.get_children())
     assert app.view.raw_table.set("PythonTimestamp", "value") != "—"
     assert app.view.raw_table.set("mag", "value") != "—"
@@ -143,5 +207,5 @@ with tempfile.TemporaryDirectory() as directory:
         server_thread.join(timeout=2)
 assert not errors, errors
 print(
-    "PASS: telemetry + camera HTTP preview, JPEG photo saving, independent disconnect and orderly close"
+    "PASS: responsive text scaling, fullscreen controls, telemetry, camera preview, photo saving and orderly close"
 )

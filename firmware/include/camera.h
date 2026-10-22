@@ -14,4 +14,9 @@ namespace CameraConfig
   constexpr uint8_t channel = 1;
   constexpr char password[] = "cansat-view"; // Change before deployment (8+ characters).
   constexpr char accessPoint[] = "CanSat-Camera";
+
+  // Built-in microSD slot: 1-bit SD_MMC uses CLK14, CMD15 and D0/GPIO2.
+  // This keeps GPIO4 (the flash LED / SD D1 line) out of the card bus.
+  constexpr bool sdEnabled = true;
+  constexpr uint32_t photoIntervalMs = 15000;
 } // namespace CameraConfig
