@@ -108,8 +108,6 @@ The ground receiver stays connected through USB while the computer joins the cam
 ```text
 .
 ├── README.md
-├── .editorconfig             # Shared indentation and line endings
-├── .clang-format             # C++ formatting rules
 ├── platformio.ini            # Arduino framework, board profile and dependencies
 ├── requirements.txt          # Desktop dependencies: pyserial and Pillow
 ├── firmware/
