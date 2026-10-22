@@ -152,8 +152,6 @@ Workers send data through queues; all widget updates run on Tk's main thread. Th
 
 `cansat.cpp` includes `telemetry_log.h` and calls `TelemetryLog::begin()` during setup and `TelemetryLog::enqueue(packet)` after sampling. PlatformIO compiles both `.cpp` files in the `cansat` environment and links them into one firmware image for a single upload.
 
-Source comments explain timing, calibration, buffer ownership and hardware assumptions. `.editorconfig` specifies spaces and line endings; `.clang-format` keeps C++ formatting consistent. Python uses four-space indentation, and C++ uses two spaces with opening braces on their own lines.
-
 ## Sensors and telemetry
 
 The CanSat measures motion, magnetic field, atmospheric conditions and GPS position. The sensor ESP32 samples these devices and transmits their readings to the ground station. A separate ESP32-CAM provides camera images over Wi-Fi.
