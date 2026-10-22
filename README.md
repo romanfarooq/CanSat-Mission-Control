@@ -352,7 +352,7 @@ python ground_station/main.py --log-dir /path/to/flight-logs
 
 ## Camera payload
 
-The **Camera** tab receives real JPEG images from a separate **AI Thinker ESP32-CAM / OV2640** payload. Its pins and Wi-Fi settings are in `firmware/include/camera.h`. The board profile matches the supplied camera example; the physical kit revision still needs checking.
+The **Camera** tab receives real JPEG images from a separate **AI Thinker ESP32-CAM / OV2640** payload. Its pins and Wi-Fi settings are in `firmware/include/camera.h`.
 
 Install the desktop dependencies through [Quick start](#quick-start-demo), then build and upload the camera firmware:
 
